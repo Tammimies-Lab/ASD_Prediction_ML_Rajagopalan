@@ -1,0 +1,596 @@
+---
+title: "R Notebook"
+output: html_notebook
+editor_options: 
+  chunk_output_type: inline
+---
+
+This is the R script used for phenotype validation of ML model accompanying the following paper
+Title: AutMedAI: Predicting Autism from a Minimal Set of Medical and Background Information using Machine Learning
+Authors: Shyam Sundar Rajagopalan, Yali Zhang, Ashraf Yahia, and Kristiina Tammimies
+Correspondence: Dr. Kristiina Tammimies, kristiina.tammimies@ki.se
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Score distribution
+
+```{r,message=TRUE}
+library(readxl)
+library(reshape2)
+library(ggplot2)
+library(ggpubr)
+
+validation_data_v10 <- read_excel('v10_validation_data.xlsx',sheet = 1)
+
+# ASD
+ASD_df <- as.data.frame(validation_data_v10[validation_data_v10$asd_x == 1,]) # 10476 asd
+
+# label the prediction result
+for (i in 1:nrow(ASD_df)) {
+  if (ASD_df$asd_x[i] == ASD_df$predicted_label[i]){
+    ASD_df[i,'Result'] <- 'Yes'
+  }else{
+    ASD_df[i,'Result'] <- 'No'
+  }
+}
+table(ASD_df$Result) # No 2214, Yes 8262
+
+# extract variables and annotate to individuals in dataset
+var_list_v10 <- read.table('phenotype_compare_selection_v10.txt',sep = '\t',comment.char = "#",header = T)
+var_list_v10
+
+var_name_list <- c()
+for (i in 1:nrow(var_list_v10)){
+  var_name <- paste0(var_list_v10$phenotype[i],':',var_list_v10$variable[i])
+  var_name_list <- c(var_name_list,var_name)
+  var <- var_list_v10$variable[i]
+  file_route <- var_list_v10$file[i]
+  
+  filein <- read.csv(paste0('../../phenotype_dataset/SPARK_collection_v10_2023-07-21/',file_route),header = T)
+  
+  for (j in 1:length(ASD_df$subject_sp_id)){
+    if (ASD_df$subject_sp_id[j] %in% filein$subject_sp_id){
+      input <- filein[filein$subject_sp_id == ASD_df$subject_sp_id[j],var]
+      if (length(input) > 1){
+        for (k in 1:length(input)){
+          if (k == 1){
+            input_1 <- filein[filein$subject_sp_id == ASD_df$subject_sp_id[j],var][k]
+            year_1 <- filein[filein$subject_sp_id == ASD_df$subject_sp_id[j],'test_year'][k]
+          }else{
+            input_2 <- filein[filein$subject_sp_id == ASD_df$subject_sp_id[j],var][k]
+            year_2 <- filein[filein$subject_sp_id == ASD_df$subject_sp_id[j],'test_year'][k]
+            if (year_2 > year_1){
+              input_1 <- input_2
+              year_1 <- year_2
+            }
+          }
+        }
+        input <- input_1
+      }
+      ASD_df[j,var_name] <- input
+    }else{
+      ASD_df[j,var_name] <- 'pheno_missing'
+    }
+  }
+}
+
+# variable recording summary
+var_subj_summary_ASD <- data.frame(row.names = var_name_list)
+for (i in var_name_list){
+  na_n <- sum(is.na(ASD_df[,i]))
+  miss_n <- length(which(ASD_df[,i] == 'pheno_missing'))
+  value_n <- sum(table(ASD_df[,i])) - length(which(ASD_df[,i] == 'pheno_missing'))
+  var_subj_summary_ASD[i,'Record'] <- value_n
+  var_subj_summary_ASD[i,'NA'] <- na_n
+  var_subj_summary_ASD[i,'Missing'] <- miss_n
+  var_subj_summary_ASD[i,'Record_percentage'] <- value_n/length(ASD_df$subject_sp_id)
+}
+
+variable_data_ASD <- ASD_df[,c(var_name_list,'Result')]
+str(variable_data_ASD)
+```
+
+```{r,warning=FALSE}
+for (i in var_name_list) {
+  plot_df <- variable_data_ASD[-which(is.na(variable_data_ASD[,i])),]
+  plot_df <- plot_df[-which(plot_df[,i] == 'pheno_missing'),]
+  if (length(plot_df[plot_df$Result == 'Yes',i] )< 5000){
+    a <- shapiro.test(as.numeric(plot_df[plot_df$Result == 'Yes',i]))
+    print(paste0(i,'\npredict correctly: ',a[["p.value"]]))
+  }else{
+    print(paste0(i,'\npredict correctly: '))
+    qqnorm(as.numeric(plot_df[plot_df$Result == 'Yes',i]))
+    qqline(as.numeric(plot_df[plot_df$Result == 'Yes',i]))
+  }
+  if (length(plot_df[plot_df$Result == 'No',i] )< 5000){
+    b <- shapiro.test(as.numeric(plot_df[plot_df$Result == 'No',i]))
+    print(paste0(i,'\npredict wrongly: ',b[["p.value"]]))
+  }else{
+    qqnorm(as.numeric(plot_df[plot_df$Result == 'Yes',i]))
+    qqline(as.numeric(plot_df[plot_df$Result == 'Yes',i]))
+  }
+}
+```
+
+```{r}
+# Plot data distribution
+for (i in var_name_list){
+  
+  modified_string <- gsub("_", " ", i)
+  modified_string <- gsub(":", ": ", modified_string)
+  modified_string <- tools::toTitleCase(modified_string)
+  
+  plot_df <- variable_data_ASD[-which(is.na(variable_data_ASD[,i])),]
+  plot_df <- plot_df[-which(plot_df[,i] == 'pheno_missing'),]
+
+  ggplot(plot_df,aes(x=Result,y=as.numeric(plot_df[,i]),fill = Result))+
+    geom_jitter(aes(color=Result),position = position_jitter(0.2),size=0.5,alpha=0.6)+
+    geom_boxplot(alpha=1,outlier.size = 0.5,size = 0.5,width=0.2,fill='transparent')+
+    geom_violin(alpha=0.5)+
+    xlab('')+
+    ylab(modified_string)+
+    ylim(min(as.numeric(plot_df[,i]))-1,max(as.numeric(plot_df[,i]))+max(as.numeric(plot_df[,i]))/10)+
+    theme_bw()+
+    geom_signif(comparisons = list(c("No", "Yes")),
+                map_signif_level = T,
+                test = wilcox.test,
+                textsize=3)+
+    theme(legend.position = 'none',
+          plot.title = element_text(size=10))+
+    scale_x_discrete(breaks = c('No','Yes'),
+                     labels = c(paste0(c('No','Yes'),'\n(n=',c(sum(plot_df$Result == 'No'),sum(plot_df$Result == 'Yes')),')')))
+  # ggsave(paste0(i,'_violine.png'),plot = last_plot(),width = 2.5,height = 3.8,dpi = 600,limitsize = TRUE)
+
+  var_subj_summary_ASD[i,'Predict_correct'] <- length(plot_df[plot_df$Result == 'Yes',i])
+  var_subj_summary_ASD[i,'Predict_wrong'] <- length(plot_df[plot_df$Result == 'No',i])
+  wilcox_test <- wilcox.test(as.numeric(plot_df[plot_df$Result == 'Yes',i]), as.numeric(plot_df[plot_df$Result == 'No',i]))
+  var_subj_summary_ASD[i,'wilcox_test_p.value'] <- wilcox_test$p.value
+}
+var_subj_summary_ASD
+```
+
+```{r,warning=FALSE}
+
+# Put on one figure
+melt_df_ASD <- melt(variable_data_ASD,id.vars="Result")
+melt_df_ASD <- melt_df_ASD[-which(is.na(melt_df_ASD$value)),]
+melt_df_ASD <- melt_df_ASD[-which(melt_df_ASD$value == 'pheno_missing'),]
+melt_df_ASD$value <- as.numeric(melt_df_ASD$value)
+min(melt_df_ASD$value)
+
+melt_df_ASD$variable <- as.character(melt_df_ASD$variable)
+
+for (i in var_name_list){
+  modified_string <- gsub("_", " ", i)
+  modified_string <- gsub(":", ": ", modified_string)
+  modified_string <- tools::toTitleCase(modified_string)
+  melt_df_ASD[,'variable'][which(melt_df_ASD[,'variable']==i)] <- modified_string
+}
+
+# unique(melt_df_ASD$variable)
+
+plot_index <- 0 
+label_set <- function(x) {
+  plot_index <<- plot_index + 1L
+  switch(plot_index,
+         c(paste0(c('No','Yes'),'\n(n=',c(sum(melt_df_ASD$Result == 'No' & melt_df_ASD$variable=="CBCL1-5: Total Problems t Score"),sum(melt_df_ASD$Result == 'Yes' & melt_df_ASD$variable=="CBCL1-5: Total Problems t Score")),')')),
+         c(paste0(c('No','Yes'),'\n(n=',c(sum(melt_df_ASD$Result == 'No' & melt_df_ASD$variable=="CBCL6-18: Total Problems t Score"),sum(melt_df_ASD$Result == 'Yes' & melt_df_ASD$variable=="CBCL6-18: Total Problems t Score")),')')),
+         c(paste0(c('No','Yes'),'\n(n=',c(sum(melt_df_ASD$Result == 'No' & melt_df_ASD$variable=="IQ: Fsiq Score"),sum(melt_df_ASD$Result == 'Yes' & melt_df_ASD$variable=="IQ: Fsiq Score")),')')),
+         c(paste0(c('No','Yes'),'\n(n=',c(sum(melt_df_ASD$Result == 'No' & melt_df_ASD$variable=="Scq: Final Score" ),sum(melt_df_ASD$Result == 'Yes' & melt_df_ASD$variable=="Scq: Final Score" )),')')))
+}
+
+ggplot(melt_df_ASD,aes(x=Result,y=value,fill = Result))+
+  geom_jitter(aes(color=Result),position = position_jitter(0.2),size=0.5,alpha=0.6)+
+  geom_boxplot(alpha=1,outlier.size = 0.5,size = 0.5,width=0.2,fill='transparent')+
+  geom_violin(alpha=0.5)+
+  facet_wrap(~variable,nrow = 1,scales = 'free') +
+  xlab('')+
+  ylab('Score')+
+  geom_signif(comparisons = list(c("No", "Yes")),
+              map_signif_level = T,
+              test = wilcox.test,
+              textsize=3)+
+  theme_bw()+
+  theme(legend.position = 'none',
+        strip.background=element_rect(colour="black",fill="white"))+
+  scale_x_discrete(labels = label_set)
+# ggsave(paste0('total','_violine.pdf'),plot = last_plot(),width = 9.5,height = 3.8,dpi = 600)
+```
+
+```{r,warning=FALSE}
+
+## Non-ASD
+non_ASD_df <- as.data.frame(validation_data_v10[validation_data_v10$asd_x == 0,]) # 10476 asd
+table(non_ASD_df$asd_x) # 1460
+
+# label the prediction result
+for (i in 1:nrow(non_ASD_df)) {
+  if (non_ASD_df$asd_x[i] == non_ASD_df$predicted_label[i]){
+    non_ASD_df[i,'Result'] <- 'Yes'
+  }else{
+    non_ASD_df[i,'Result'] <- 'No'
+  }
+}
+table(non_ASD_df$Result) # No 305, Yes 1155
+
+var_name_list <- c()
+for (i in 1:nrow(var_list_v10)){
+  var_name <- paste0(var_list_v10$phenotype[i],':',var_list_v10$variable[i])
+  var_name_list <- c(var_name_list,var_name)
+  var <- var_list_v10$variable[i]
+  file_route <- var_list_v10$file[i]
+  
+  filein <- read.csv(paste0('../../phenotype_dataset/SPARK_collection_v10_2023-07-21/',file_route),header = T)
+  
+  for (j in 1:length(non_ASD_df$subject_sp_id)){
+    if (non_ASD_df$subject_sp_id[j] %in% filein$subject_sp_id){
+      input <- filein[filein$subject_sp_id == non_ASD_df$subject_sp_id[j],var]
+      if (length(input) > 1){
+        for (k in 1:length(input)){
+          if (k == 1){
+            input_1 <- filein[filein$subject_sp_id == non_ASD_df$subject_sp_id[j],var][k]
+            year_1 <- filein[filein$subject_sp_id == non_ASD_df$subject_sp_id[j],'test_year'][k]
+          }else{
+            input_2 <- filein[filein$subject_sp_id == non_ASD_df$subject_sp_id[j],var][k]
+            year_2 <- filein[filein$subject_sp_id == non_ASD_df$subject_sp_id[j],'test_year'][k]
+            if (year_2 > year_1){
+              input_1 <- input_2
+              year_1 <- year_2
+            }
+          }
+        }
+        input <- input_1
+      }
+      non_ASD_df[j,var_name] <- input
+    }else{
+      non_ASD_df[j,var_name] <- 'pheno_missing'
+    }
+  }
+}
+
+# variable recording summary
+var_subj_summary_non_ASD <- data.frame(row.names = var_name_list)
+for (i in var_name_list){
+  na_n <- sum(is.na(non_ASD_df[,i]))
+  miss_n <- length(which(non_ASD_df[,i] == 'pheno_missing'))
+  value_n <- sum(table(non_ASD_df[,i])) - length(which(non_ASD_df[,i] == 'pheno_missing'))
+  var_subj_summary_non_ASD[i,'Record'] <- value_n
+  var_subj_summary_non_ASD[i,'NA'] <- na_n
+  var_subj_summary_non_ASD[i,'Missing'] <- miss_n
+  var_subj_summary_non_ASD[i,'Record_percentage'] <- value_n/length(non_ASD_df$subject_sp_id)
+}
+
+
+modified_string <- gsub("_", " ", 'scq:final_score')
+modified_string <- gsub(":", ": ", modified_string)
+modified_string <- tools::toTitleCase(modified_string)
+
+plot_df <- non_ASD_df[-which(is.na(non_ASD_df[,'scq:final_score'])),]
+plot_df <- plot_df[-which(plot_df[,'scq:final_score'] == 'pheno_missing'),]
+
+ggplot(plot_df,aes(x=Result,y=as.numeric(plot_df[,'scq:final_score']),fill = Result))+
+  geom_jitter(aes(color=Result),position = position_jitter(0.2),size=0.5,alpha=0.6)+
+  geom_boxplot(alpha=1,outlier.size = 0.5,size = 0.5,width=0.15,fill='transparent')+
+  geom_violin(alpha=0.5)+
+  xlab('')+
+  ylab(modified_string)+
+  ylim(-1,max(as.numeric(plot_df[,i]))+max(as.numeric(plot_df[,i]))/10)+
+  theme_bw()+
+  geom_signif(comparisons = list(c("No", "Yes")),
+              map_signif_level = T,
+              test = wilcox.test,
+              textsize=3)+
+  theme(legend.position = 'none',
+        plot.title = element_text(size=10))+
+  scale_x_discrete(breaks = c('No','Yes'),
+                   labels = c(paste0(c('No','Yes'),'\n(n=',c(sum(plot_df$Result == 'No'),sum(plot_df$Result == 'Yes')),')')))
+# ggsave(paste0('False_positive/',i,'_violine.png'),plot = last_plot(),width = 2.5,height = 3.8,dpi = 600,limitsize = TRUE)
+
+```
+
+```{r}
+var_subj_summary_non_ASD['scq:final_score','Result_Ture'] <- length(plot_df[plot_df$Result == 'Yes','scq:final_score'])
+var_subj_summary_non_ASD['scq:final_score','Result_False'] <- length(plot_df[plot_df$Result == 'No','scq:final_score'])
+
+shapiro.test(as.numeric(plot_df[plot_df$Result == 'Yes','scq:final_score']))
+```
+
+```{r}
+shapiro.test(as.numeric(plot_df[plot_df$Result == 'No','scq:final_score']))
+```
+
+```{r}
+wilcox_test <- wilcox.test(as.numeric(plot_df[plot_df$Result == 'Yes','scq:final_score']), as.numeric(plot_df[plot_df$Result == 'No','scq:final_score']))
+var_subj_summary_non_ASD['scq:final_score','wilcox_test_p.value'] <- wilcox_test$p.value
+var_subj_summary_non_ASD
+```
+
+## Odds ratio
+
+```{r,message=FALSE,error=TRUE,warning=FALSE}
+v_file <- as.data.frame(read_excel('pheno_selection.xlsx',sheet = 1, na = 'NA'))
+BMS_V10 <- read.csv("../../phenotype_dataset/SPARK_collection_v10_2023-07-21/basic_medical_screening_production-2023-07-21.csv",header = T)
+
+# asd
+for (i in 1:length(v_file$variable)){
+  var <- v_file$variable[i]
+  for (j in 1:length(ASD_df$subject_sp_id)){
+    if (ASD_df$subject_sp_id[j] %in% BMS_V10$subject_sp_id){
+      input <- BMS_V10[BMS_V10$subject_sp_id == ASD_df$subject_sp_id[j],var]
+      if (length(input) > 1){
+        for (k in 1:length(input)){
+          if (k == 1){
+            input_1 <- BMS_V10[BMS_V10$subject_sp_id == ASD_df$subject_sp_id[j],var][k]
+            year_1 <- BMS_V10[BMS_V10$subject_sp_id == ASD_df$subject_sp_id[j],'test_year'][k]
+          }else{
+            input_2 <- BMS_V10[BMS_V10$subject_sp_id == ASD_df$subject_sp_id[j],var][k]
+            year_2 <- BMS_V10[BMS_V10$subject_sp_id == ASD_df$subject_sp_id[j],'test_year'][k]
+            if (year_2 > year_1){
+              input_1 <- input_2
+              year_1 <- year_2
+            }
+          }
+        }
+        input <- input_1
+      }
+      if(is.na(input)){
+        ASD_df[j,var] <- 'blank'
+      }else{
+        ASD_df[j,var] <- input
+      }
+    }else{
+      ASD_df[j,var] <- 'pheno_missing'
+    }
+  }
+}
+
+var_subj_summary_ASD_pheno2 <- data.frame(row.names = v_file$variable)
+for (i in v_file$variable){
+  na_n <- length(which(ASD_df[,i] == 'blank'))
+  miss_n <- length(which(ASD_df[,i] == 'pheno_missing'))
+  value_n <- sum(table(ASD_df[,i])) - length(which(ASD_df[,i] == 'pheno_missing'))
+  
+  var_subj_summary_ASD_pheno2[i,'Record'] <- value_n
+  var_subj_summary_ASD_pheno2[i,'NA'] <- na_n
+  var_subj_summary_ASD_pheno2[i,'Missing'] <- miss_n
+  var_subj_summary_ASD_pheno2[i,'Record_percentage'] <- value_n/length(ASD_df$subject_sp_id)
+}
+var_subj_summary_ASD_pheno2
+```
+
+```{r,warning=FALSE}
+# non-asd
+for (i in 1:length(v_file$variable)){
+  var <- v_file$variable[i]
+  for (j in 1:length(non_ASD_df$subject_sp_id)){
+    if (non_ASD_df$subject_sp_id[j] %in% BMS_V10$subject_sp_id){
+      input <- BMS_V10[BMS_V10$subject_sp_id == non_ASD_df$subject_sp_id[j],var]
+      if (length(input) > 1){
+        for (k in 1:length(input)){
+          if (k == 1){
+            input_1 <- BMS_V10[BMS_V10$subject_sp_id == non_ASD_df$subject_sp_id[j],var][k]
+            year_1 <- BMS_V10[BMS_V10$subject_sp_id == non_ASD_df$subject_sp_id[j],'test_year'][k]
+          }else{
+            input_2 <- BMS_V10[BMS_V10$subject_sp_id == non_ASD_df$subject_sp_id[j],var][k]
+            year_2 <- BMS_V10[BMS_V10$subject_sp_id == non_ASD_df$subject_sp_id[j],'test_year'][k]
+            if (year_2 > year_1){
+              input_1 <- input_2
+              year_1 <- year_2
+            }
+          }
+        }
+        input <- input_1
+      }
+      if(is.na(input)){
+        non_ASD_df[j,var] <- 'blank'
+      }else{
+        non_ASD_df[j,var] <- input
+      }
+    }else{
+      non_ASD_df[j,var] <- 'pheno_missing'
+    }
+  }
+}
+
+var_subj_summary_non_ASD_pheno2 <- data.frame(row.names = v_file$variable)
+for (i in v_file$variable){
+  na_n <- length(which(non_ASD_df[,i] == 'blank'))
+  miss_n <- length(which(non_ASD_df[,i] == 'pheno_missing'))
+  value_n <- sum(table(non_ASD_df[,i])) - length(which(non_ASD_df[,i] == 'pheno_missing'))
+  
+  var_subj_summary_non_ASD_pheno2[i,'Record'] <- value_n
+  var_subj_summary_non_ASD_pheno2[i,'NA'] <- na_n
+  var_subj_summary_non_ASD_pheno2[i,'Missing'] <- miss_n
+  var_subj_summary_non_ASD_pheno2[i,'Record_percentage'] <- value_n/length(non_ASD_df$subject_sp_id)
+}
+var_subj_summary_non_ASD_pheno2
+```
+
+```{r,warning=FALSE}
+
+validation_data_merge <- rbind.data.frame(cbind.data.frame(ASD_df[,c('Result',v_file$variable)],Outcome=rep('ASD',nrow(ASD_df))),
+                                          cbind.data.frame(non_ASD_df[,c('Result',v_file$variable)],Outcome=rep('Non-ASD',nrow(non_ASD_df))))
+
+for (i in v_file$variable){
+  validation_data_merge[which(validation_data_merge[,i]=='blank'),i] <- 0
+}
+
+# summary
+df_version <- c()
+df_predict <- c()
+df_phe <- c()
+df_nall <- c()
+df_nhave <- c()
+df_freq <- c()
+for (i in c('Yes','No')) {
+  for (v in c('ASD','Non-ASD')){
+    for (j in v_file$variable) {
+      df_version <- c(df_version,v)
+      df_predict <- c(df_predict,i)
+      df_phe <- c(df_phe,j)
+      df_nhave <- c(df_nhave,sum(validation_data_merge[validation_data_merge$Result == i & validation_data_merge$Outcome==v ,j] > 0))
+      df_nall <- c(df_nall,sum(validation_data_merge$Result == i  & validation_data_merge$Outcome==v))
+      df_freq <- c(df_freq,sum(validation_data_merge[validation_data_merge$Result == i  & validation_data_merge$Outcome==v,j] > 0)/sum(validation_data_merge$Result == i  & validation_data_merge$Outcome==v))
+    }
+  }
+}
+
+freq_df <- cbind.data.frame('Outcome' = df_version,
+                            'Result' = df_predict,
+                            'Phenotype' = df_phe,
+                            'Num_with' = df_nhave,
+                            'Num_all' = df_nall,
+                            'Freq' = df_freq)
+
+# Odds ratio
+library(epitools)
+
+for (i in unique(validation_data_merge$Outcome)){
+  result_list <- validation_data_merge[validation_data_merge$Outcome == i ,'Result']
+  for (phe in v_file$variable){
+    diagnosis <- validation_data_merge[validation_data_merge$Outcome == i ,phe]
+    table <- table(result_list, diagnosis)
+    freq_df[freq_df$Phenotype == phe & freq_df$Outcome == i ,'OR'] <- oddsratio(table)$measure[2,1]
+    freq_df[freq_df$Phenotype == phe & freq_df$Outcome == i ,'lower_CI'] <- oddsratio(table)$measure[2,2]
+    freq_df[freq_df$Phenotype == phe & freq_df$Outcome == i ,'upper_CI'] <- oddsratio(table)$measure[2,3]
+  }
+}
+
+for ( i in 1:nrow(freq_df)){
+  type <- v_file[v_file$variable == freq_df$Phenotype[i],'variable_group']
+  freq_df[i,'Type'] <- tools::toTitleCase(type)
+}
+
+freq_df$Phenotype <- as.factor(freq_df$Phenotype)
+freq_df$Phenotype <- factor(freq_df$Phenotype,levels = c('Attention or behavior disorders','Attention Deficit-Hyperactivity Disorder',
+                                                         'Conduct Disorder','Intermittent Explosive Disorder','Oppositional Defiant Disorder',
+                                                         'Language delay or language disorder',  'Learning disability', 'Motor delay or developmental coordination disorder',
+                                                         'Mutism', 'Social (Pragmatic) Communication Disorder' ,        
+                                                         'Speech articulation problems') )
+
+## forest plot
+df_forest_ASD <- data.frame(row.names = levels(freq_df$Phenotype))
+
+for (i in 1:nlevels(freq_df$Phenotype)) {
+  phe <- levels(freq_df$Phenotype)[i]
+  df_forest_ASD[i,'Diagnosis'] <- phe
+  df_forest_ASD[i,'Yes_event'] <-  freq_df[which(freq_df$Phenotype == phe & freq_df$Outcome=='ASD' & freq_df$Result=='Yes'),'Num_with']
+  df_forest_ASD[i,'Yes_all'] <-  freq_df[freq_df$Phenotype == phe & freq_df$Outcome=='ASD' & freq_df$Result=='Yes','Num_all']
+  df_forest_ASD[i,'No_event'] <-  freq_df[freq_df$Phenotype == phe & freq_df$Outcome=='ASD' & freq_df$Result=='No','Num_with']
+  df_forest_ASD[i,'No_all'] <-  freq_df[freq_df$Phenotype == phe & freq_df$Outcome=='ASD' & freq_df$Result=='No','Num_all']
+  df_forest_ASD[i,'OR'] <-  freq_df[freq_df$Phenotype == phe & freq_df$Outcome=='ASD' & freq_df$Result=='No','OR']  
+  df_forest_ASD[i,'lower_CI'] <-  freq_df[freq_df$Phenotype == phe & freq_df$Outcome=='ASD' & freq_df$Result=='No','lower_CI']
+  df_forest_ASD[i,'upper_CI'] <-  freq_df[freq_df$Phenotype == phe & freq_df$Outcome=='ASD' & freq_df$Result=='No','upper_CI']
+  df_forest_ASD[i,'OR (95% CI)'] <-  paste0(sprintf("%.2f", as.numeric(df_forest_ASD[i,'OR'])),' (',sprintf("%.2f", df_forest_ASD[i,'lower_CI']),'-',sprintf("%.2f", df_forest_ASD[i,'upper_CI']),')  ')
+}
+
+df_forest_non_ASD <- data.frame(row.names = levels(freq_df$Phenotype))
+
+for (i in 1:nlevels(freq_df$Phenotype)) {
+  phe <- levels(freq_df$Phenotype)[i]
+  df_forest_non_ASD[i,'Diagnosis'] <- phe
+  df_forest_non_ASD[i,'Yes_event'] <-  freq_df[which(freq_df$Phenotype == phe & freq_df$Outcome=='Non-ASD' & freq_df$Result=='Yes'),'Num_with']
+  df_forest_non_ASD[i,'Yes_all'] <-  freq_df[freq_df$Phenotype == phe & freq_df$Outcome=='Non-ASD' & freq_df$Result=='Yes','Num_all']
+  df_forest_non_ASD[i,'No_event'] <-  freq_df[freq_df$Phenotype == phe & freq_df$Outcome=='Non-ASD' & freq_df$Result=='No','Num_with']
+  df_forest_non_ASD[i,'No_all'] <-  freq_df[freq_df$Phenotype == phe & freq_df$Outcome=='Non-ASD' & freq_df$Result=='No','Num_all']
+  df_forest_non_ASD[i,'OR'] <-  freq_df[freq_df$Phenotype == phe & freq_df$Outcome=='Non-ASD' & freq_df$Result=='No','OR']  
+  df_forest_non_ASD[i,'lower_CI'] <-  freq_df[freq_df$Phenotype == phe & freq_df$Outcome=='Non-ASD' & freq_df$Result=='No','lower_CI']
+  df_forest_non_ASD[i,'upper_CI'] <-  freq_df[freq_df$Phenotype == phe & freq_df$Outcome=='Non-ASD' & freq_df$Result=='No','upper_CI']
+  df_forest_non_ASD[i,'OR (95% CI)'] <-  paste0(sprintf("%.2f", as.numeric(df_forest_non_ASD[i,'OR'])),' (',sprintf("%.2f", df_forest_non_ASD[i,'lower_CI']),'-',sprintf("%.2f", df_forest_non_ASD[i,'upper_CI']),')  ')
+}
+
+test_df <- cbind(df_forest_ASD[,c(1,2,4,9)],` `=paste(rep(" ", nrow(df_forest_ASD)), collapse = "    "),df_forest_ASD[,c(6,7,8)])
+test_df_2 <- cbind(df_forest_non_ASD[,c(1,2,4,9)],` `=paste(rep(" ", nrow(df_forest_non_ASD)), collapse = "    "),df_forest_non_ASD[,c(6,7,8)])
+
+row1 <- c('ASD','Yes\n(n=8268)','No\n(n=2214)    ','','','','','')
+row2 <- c('Non-ASD','Yes\n(n=1155)','No\n(n=305)','','','','','')
+
+forest_df <- rbind(row1,test_df,row2,test_df_2)
+forest_df2 <- forest_df[1:21,]
+
+forest_df2$OR <- round(as.numeric(forest_df2$OR),2)
+
+forest_df2$OR[1] <- ''
+forest_df2$OR[13] <- ''
+colnames(forest_df2)[2] <- 'AutMedAI prediction\nlabel correct'
+colnames(forest_df2)[3] <- ' '
+colnames(forest_df2)[5] <- '  '
+
+forest_df2$Diagnosis <- paste0('   ',forest_df2$Diagnosis)
+forest_df2$Diagnosis[1] <- 'Autism'
+forest_df2$Diagnosis[13] <- 'Non-autism'
+
+tm <- forest_theme(base_size = 10,
+                   # Confidence interval point shape, line type/color/width
+                   ci_pch = 15,
+                   ci_col = "black",
+                   ci_fill = "darkblue",
+                   ci_alpha = 0.8,
+                   ci_lty = 1,
+                   ci_lwd = 1.5,
+                   ci_Theight = 0.2, # Set a T end at the end of CI 
+                   # Reference line width/type/color
+                   refline_lwd = gpar(lwd = 1, lty = "dashed", col = "grey"),
+                   core=list(bg_params=list(fill = c("grey95",rep("White",11) ))))
+
+p = forest(forest_df2[,1:5],
+       est = as.numeric(forest_df2$OR),
+       lower = as.numeric(forest_df2$lower_CI), 
+       upper = as.numeric(forest_df2$upper_CI),
+       # sizes = dt$se,
+       ci_column = 5,
+       ref_line = 1,
+       xlim = c(-1, 6),
+       xlab = c("            OR (95% CI)"),
+       theme = tm)
+# ggsave('forest_240529.pdf',plot = p,width = 10,height = 6,dpi = 600,limitsize = TRUE)
+```
+
+```{r}
+
+# adjust p value
+
+freq_df$No_n <- freq_df$Num_all - freq_df$Num_with
+
+test_df2 <- data.frame(row.names = c(0,1))
+
+for (v in unique(freq_df$Outcome)){
+  for (i in unique(freq_df$Phenotype)){
+    print(c(v,i))
+    test_df2[1,'Yes'] <- freq_df[freq_df$Phenotype == i & freq_df$Result == 'Yes'  & freq_df$Outcome == v, 'No_n']
+    test_df2[2,'Yes'] <- freq_df[freq_df$Phenotype == i & freq_df$Result == 'Yes' & freq_df$Outcome == v, 'Num_with']
+    test_df2[1,'No'] <- freq_df[freq_df$Phenotype == i & freq_df$Result == 'No' & freq_df$Outcome == v, 'No_n']
+    test_df2[2,'No'] <- freq_df[freq_df$Phenotype == i & freq_df$Result == 'No' & freq_df$Outcome == v, 'Num_with']
+    
+    test_df2$Yes <- as.numeric(test_df2$Yes)
+    test_df2$No <- as.numeric(test_df2$No)
+    
+    chisq <- chisq.test(test_df2)
+    
+    freq_df[freq_df$Phenotype == i & freq_df$Outcome == v,'Chisq_p'] <- chisq$p.value
+    adj_p <- chisq$p.value * length(unique(freq_df$Phenotype))
+    freq_df[freq_df$Phenotype == i & freq_df$Outcome == v,'Chisq_p_adjust'] <- adj_p
+   
+     if (adj_p <= 0.001){
+      freq_df[freq_df$Phenotype == i & freq_df$Outcome == v,'significance'] <- '***'
+    }else if(adj_p > 0.001 & adj_p <= 0.01){
+      freq_df[freq_df$Phenotype == i & freq_df$Outcome == v,'significance'] <- '**'
+    }else if(adj_p > 0.01 & adj_p <= 0.05){
+      freq_df[freq_df$Phenotype == i & freq_df$Outcome == v,'significance'] <- '*'
+    }else if(adj_p > 0.05){
+      freq_df[freq_df$Phenotype == i & freq_df$Outcome == v,'significance'] <- 'NA'
+    }
+  }
+}
+
+# output data table
+
+library(writexl)
+var_subj_summary_ASD2 <- cbind('phenotype' = rownames(var_subj_summary_ASD),var_subj_summary_ASD)
+var_subj_summary_non_ASD2 <- cbind('phenotype' = rownames(var_subj_summary_non_ASD),var_subj_summary_non_ASD)
+# write_xlsx(list('ASD_score'=var_subj_summary_ASD2, 'Non-ASD_score'=var_subj_summary_non_ASD2,"Odds ratio"=freq_df),"statistics_model_prediction.xlsx")
+
+freq_df
+```

@@ -4,6 +4,9 @@
 # Virtual Environments #
 .venv
 
+# VS Code or other IDE #
+.vscode
+
 # Compiled source #
 ###################
 *.com
